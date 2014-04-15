@@ -112,13 +112,6 @@ module Stripe
     end
 
     context "with valid credentials" do
-      should "urlencode values in GET params" do
-        response = test_response(test_charge_array)
-        @mock.expects(:get).with("#{Stripe.api_base}/v1/charges?customer=test%20customer", nil, nil).returns(response)
-        charges = Stripe::Charge.all(:customer => 'test customer').data
-        assert charges.kind_of? Array
-      end
-
       should "construct URL properly with base query parameters" do
         response = test_response(test_invoice_customer_array)
         @mock.expects(:get).with("#{Stripe.api_base}/v1/invoices?customer=test_customer", nil, nil).returns(response)
