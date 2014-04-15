@@ -4,12 +4,12 @@ require File.expand_path('../../test_helper', __FILE__)
 module Stripe
   class ApiResourceTest < Test::Unit::TestCase
     should "creating a new APIResource should not fetch over the network" do
-      @mock.expects(:get).never
+      Stripe.expects(:execute_request).with(has_entry(:method => :get)).never
       Stripe::Customer.new("someid")
     end
 
     should "creating a new APIResource from a hash should not fetch over the network" do
-      @mock.expects(:get).never
+      Stripe.expects(:execute_request).with(has_entry(:method => :get)).never
       Stripe::Customer.construct_from({
         :id => "somecustomer",
         :card => {:id => "somecard", :object => "card"},
@@ -18,15 +18,14 @@ module Stripe
     end
 
     should "setting an attribute should not cause a network request" do
-      @mock.expects(:get).never
-      @mock.expects(:post).never
+      Stripe.expects(:execute_request).never
       c = Stripe::Customer.new("test_customer");
       c.card = {:id => "somecard", :object => "card"}
     end
 
     should "accessing id should not issue a fetch" do
-      @mock.expects(:get).never
-      c = Stripe::Customer.new("test_customer");
+      Stripe.expects(:execute_request).never
+      c = Stripe::Customer.new("test_customer")
       c.id
     end
 
@@ -46,24 +45,23 @@ module Stripe
 
     should "specifying invalid api credentials should raise an exception" do
       Stripe.api_key = "invalid"
-      response = test_response(test_invalid_api_key_error, 401)
       assert_raises Stripe::AuthenticationError do
-        @mock.expects(:get).once.raises(RestClient::ExceptionWithResponse.new(response, 401))
         Stripe::Customer.retrieve("failing_customer")
       end
     end
 
     should "AuthenticationErrors should have an http status, http body, and JSON body" do
       Stripe.api_key = "invalid"
-      response = test_response(test_invalid_api_key_error, 401)
+
       begin
-        @mock.expects(:get).once.raises(RestClient::ExceptionWithResponse.new(response, 401))
-        Stripe::Customer.retrieve("failing_customer")
+        VCR.use_cassette('api_resource/auth_errors') do
+          Stripe::Customer.retrieve("failing_customer")
+        end
       rescue Stripe::AuthenticationError => e
         assert_equal(401, e.http_status)
         assert_equal(true, !!e.http_body)
         assert_equal(true, !!e.json_body[:error][:message])
-        assert_equal(test_invalid_api_key_error['error']['message'], e.json_body[:error][:message])
+        assert_match test_invalid_api_key_error['error']['message'], e.json_body[:error][:message]
       end
     end
 
