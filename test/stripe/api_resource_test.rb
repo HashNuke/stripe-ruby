@@ -112,85 +112,62 @@ module Stripe
     end
 
     context "with valid credentials" do
-      should "construct URL properly with base query parameters" do
-        response = test_response(test_invoice_customer_array)
-        @mock.expects(:get).with("#{Stripe.api_base}/v1/invoices?customer=test_customer", nil, nil).returns(response)
-        invoices = Stripe::Invoice.all(:customer => 'test_customer')
 
-        @mock.expects(:get).with("#{Stripe.api_base}/v1/invoices?customer=test_customer&paid=true", nil, nil).returns(response)
+      setup do
+        VCR.use_cassette('api_resource/create_test_customer') do
+          @customer = Stripe::Customer.create({:email => Faker::Internet.email})
+        end
+      end
+
+      teardown do
+        VCR.use_cassette('api_resource/delete_test_customer') do
+          # If this method is stubbed, revive it.
+          Stripe.unstub(:execute_request)
+          @customer.delete
+        end
+      end
+
+      should "construct URL properly with base query parameters" do
+        response = test_response(test_invoice_customer_array(@customer.id))
+        customer_invoices_url = "#{Stripe.api_base}/v1/invoices?customer=#{@customer.id}"
+        paid_customer_invoices_url = "#{customer_invoices_url}&paid=true"
+
+        Stripe.expects(:execute_request).
+          with(has_value(customer_invoices_url)).
+          returns(response)
+        invoices = Stripe::Invoice.all(:customer => @customer.id)
+
+        Stripe.expects(:execute_request).
+          with(has_value(paid_customer_invoices_url)).
+          returns(response)
         invoices.all(:paid => true)
       end
 
-      should "a 400 should give an InvalidRequestError with http status, body, and JSON body" do
-        response = test_response(test_missing_id_error, 400)
-        @mock.expects(:get).once.raises(RestClient::ExceptionWithResponse.new(response, 404))
-        begin
-          Stripe::Customer.retrieve("foo")
-        rescue Stripe::InvalidRequestError => e
-          assert_equal(400, e.http_status)
-          assert_equal(true, !!e.http_body)
-          assert_equal(true, e.json_body.kind_of?(Hash))
-        end
-      end
-
-      should "a 401 should give an AuthenticationError with http status, body, and JSON body" do
-        response = test_response(test_missing_id_error, 401)
-        @mock.expects(:get).once.raises(RestClient::ExceptionWithResponse.new(response, 404))
-        begin
-          Stripe::Customer.retrieve("foo")
-        rescue Stripe::AuthenticationError => e
-          assert_equal(401, e.http_status)
-          assert_equal(true, !!e.http_body)
-          assert_equal(true, e.json_body.kind_of?(Hash))
-        end
-      end
-
-      should "a 402 should give a CardError with http status, body, and JSON body" do
-        response = test_response(test_missing_id_error, 402)
-        @mock.expects(:get).once.raises(RestClient::ExceptionWithResponse.new(response, 404))
-        begin
-          Stripe::Customer.retrieve("foo")
-        rescue Stripe::CardError => e
-          assert_equal(402, e.http_status)
-          assert_equal(true, !!e.http_body)
-          assert_equal(true, e.json_body.kind_of?(Hash))
-        end
-      end
-
-      should "a 404 should give an InvalidRequestError with http status, body, and JSON body" do
-        response = test_response(test_missing_id_error, 404)
-        @mock.expects(:get).once.raises(RestClient::ExceptionWithResponse.new(response, 404))
-        begin
-          Stripe::Customer.retrieve("foo")
-        rescue Stripe::InvalidRequestError => e
-          assert_equal(404, e.http_status)
-          assert_equal(true, !!e.http_body)
-          assert_equal(true, e.json_body.kind_of?(Hash))
-        end
-      end
 
       should "setting a nil value for a param should exclude that param from the request" do
-        @mock.expects(:get).with do |url, api_key, params|
-          uri = URI(url)
-          query = CGI.parse(uri.query)
+        Stripe.expects(:execute_request).with do |request_options|
+          puts request_options.inspect
+          url = request_options[:url]
+          query = CGI.parse(URI.parse(url))
           (url =~ %r{^#{Stripe.api_base}/v1/charges?} &&
            query.keys.sort == ['offset', 'sad'])
         end.returns(test_response({ :count => 1, :data => [test_charge] }))
         Stripe::Charge.all(:count => nil, :offset => 5, :sad => false)
 
-        @mock.expects(:post).with do |url, api_key, params|
-          url == "#{Stripe.api_base}/v1/charges" &&
+        Stripe.expects(:execute_request).with do |request_options|
+          params = CGI.parse request_options[:payload]
+          request_options[:url] == "#{Stripe.api_base}/v1/charges" &&
             api_key.nil? &&
-            CGI.parse(params) == { 'amount' => ['50'], 'currency' => ['usd'] }
+            params == { 'amount' => ['50'], 'currency' => ['usd'] }
         end.returns(test_response({ :count => 1, :data => [test_charge] }))
         Stripe::Charge.create(:amount => 50, :currency => 'usd', :card => { :number => nil })
       end
 
       should "requesting with a unicode ID should result in a request" do
-        response = test_response(test_missing_id_error, 404)
-        @mock.expects(:get).once.with("#{Stripe.api_base}/v1/customers/%E2%98%83", nil, nil).raises(RestClient::ExceptionWithResponse.new(response, 404))
-        c = Stripe::Customer.new("☃")
-        assert_raises(Stripe::InvalidRequestError) { c.refresh }
+        VCR.use_cassette('api_resource/request_with_unicode_id') do
+          c = Stripe::Customer.new("☃")
+          assert_raises(Stripe::InvalidRequestError) { c.refresh }
+        end
       end
 
       should "requesting with no ID should result in an InvalidRequestError with no request" do
@@ -200,63 +177,78 @@ module Stripe
 
       should "making a GET request with parameters should have a query string and no body" do
         params = { :limit => 1 }
-        @mock.expects(:get).once.with("#{Stripe.api_base}/v1/charges?limit=1", nil, nil).returns(test_response([test_charge]))
+        Stripe.expects(:execute_request).once.with do |request_options|
+          request_options[:url] == "#{Stripe.api_base}/v1/charges?limit=1"
+        end.returns(test_response([test_charge]))
         Stripe::Charge.all(params)
       end
 
       should "making a POST request with parameters should have a body and no query string" do
         params = { :amount => 100, :currency => 'usd', :card => 'sc_token' }
-        @mock.expects(:post).once.with do |url, get, post|
-          get.nil? && CGI.parse(post) == {'amount' => ['100'], 'currency' => ['usd'], 'card' => ['sc_token']}
+        Stripe.expects(:execute_request).once.with do |request_options|
+          post_params = CGI.parse(request_options[:payload])
+          uri = URI.parse request_options[:url]
+          uri.query.nil? && post_params == {'amount' => ['100'], 'currency' => ['usd'], 'card' => ['sc_token']}
         end.returns(test_response(test_charge))
         Stripe::Charge.create(params)
       end
 
       should "loading an object should issue a GET request" do
-        @mock.expects(:get).once.returns(test_response(test_customer))
-        c = Stripe::Customer.new("test_customer")
-        c.refresh
+        VCR.use_cassette('api_resource/loading_object') do
+          c = Stripe::Customer.new(@customer.id)
+          c.refresh
+        end
       end
 
       should "using array accessors should be the same as the method interface" do
-        @mock.expects(:get).once.returns(test_response(test_customer))
-        c = Stripe::Customer.new("test_customer")
-        c.refresh
-        assert_equal c.created, c[:created]
-        assert_equal c.created, c['created']
-        c['created'] = 12345
-        assert_equal c.created, 12345
+        @customer.refresh
+        assert_equal @customer.created, @customer[:created]
+        assert_equal @customer.created, @customer['created']
+        @customer['created'] = 12345
+        assert_equal @customer.created, 12345
       end
 
       should "accessing a property other than id or parent on an unfetched object should fetch it" do
-        @mock.expects(:get).once.returns(test_response(test_customer))
-        c = Stripe::Customer.new("test_customer")
-        c.charges
+        Stripe.expects(:execute_request).returns(test_response(test_charge_array))
+        @customer.charges
       end
 
       should "updating an object should issue a POST request with only the changed properties" do
-        @mock.expects(:post).with do |url, api_key, params|
-          url == "#{Stripe.api_base}/v1/customers/c_test_customer" && api_key.nil? && CGI.parse(params) == {'description' => ['another_mn']}
-        end.once.returns(test_response(test_customer))
-        c = Stripe::Customer.construct_from(test_customer)
-        c.description = "another_mn"
-        c.save
+        VCR.use_cassette('api_resource/post_only_changed_properties') do
+          c = Stripe::Customer.construct_from(@customer)
+          c.description = "another_mn"
+
+
+          Stripe.expects(:execute_request).with do |request_options|
+            (
+              request_options[:url] == "#{Stripe.api_base}/v1/customers/#{@customer.id}" &&
+                request_options[:api_key].nil? &&
+                CGI.parse(request_options[:payload]) == {'description' => ['another_mn']}
+            )
+          end.once.returns(test_response(test_customer))
+
+          c.save
+        end
       end
 
       should "updating should merge in returned properties" do
-        @mock.expects(:post).once.returns(test_response(test_customer))
-        c = Stripe::Customer.new("c_test_customer")
-        c.description = "another_mn"
-        c.save
-        assert_equal false, c.livemode
+        VCR.use_cassette('api_resource/updating_should_merge_props') do
+          c = Stripe::Customer.new(@customer.id)
+          new_description = "another customer"
+          c.description = new_description
+          c.save
+
+          assert_equal new_description, c.description
+        end
       end
 
       should "deleting should send no props and result in an object that has no props other deleted" do
-        @mock.expects(:get).never
-        @mock.expects(:post).never
-        @mock.expects(:delete).with("#{Stripe.api_base}/v1/customers/c_test_customer", nil, nil).once.returns(test_response({ "id" => "test_customer", "deleted" => true }))
+        c = Stripe::Customer.construct_from(@customer)
 
-        c = Stripe::Customer.construct_from(test_customer)
+        Stripe.expects(:execute_request).with do |request_options|
+          request_options[:url] == "#{Stripe.api_base}/v1/customers/#{@customer.id}"
+        end.once.returns(test_response({ "id" => @customer.id, "deleted" => true }))
+
         c.delete
         assert_equal true, c.deleted
 
@@ -267,8 +259,10 @@ module Stripe
 
       should "loading an object with properties that have specific types should instantiate those classes" do
         @mock.expects(:get).once.returns(test_response(test_charge))
-        c = Stripe::Charge.retrieve("test_charge")
-        assert c.card.kind_of?(Stripe::StripeObject) && c.card.object == 'card'
+        VCR.use_cassette('api_resource/object_instantiation') do
+          c = Stripe::Customer.retrieve(@customer.id)
+          assert c.card.kind_of?(Stripe::StripeObject) && c.card.object == 'card'
+        end
       end
 
       should "loading all of an APIResource should return an array of recursively instantiated objects" do
@@ -279,60 +273,79 @@ module Stripe
         assert c[0].card.kind_of?(Stripe::StripeObject) && c[0].card.object == 'card'
       end
 
+
       context "error checking" do
 
-        should "404s should raise an InvalidRequestError" do
-          response = test_response(test_missing_id_error, 404)
-          @mock.expects(:get).once.raises(RestClient::ExceptionWithResponse.new(response, 404))
+        should "a 400 should give an InvalidRequestError with http status, body, and JSON body" do
+          response = test_response(test_api_error, 400)
+          Stripe.expects(:execute_request).once.
+            raises(RestClient::ExceptionWithResponse.new(response, 400))
 
-          rescued = false
           begin
-            Stripe::Customer.new("test_customer").refresh
-            assert false #shouldn't get here either
-          rescue Stripe::InvalidRequestError => e # we don't use assert_raises because we want to examine e
-            rescued = true
-            assert e.kind_of? Stripe::InvalidRequestError
-            assert_equal "id", e.param
-            assert_equal "Missing id", e.message
+            Stripe::Customer.retrieve("foo")
+          rescue Stripe::InvalidRequestError => e
+            assert_equal(400, e.http_status)
+            assert_equal(true, !!e.http_body)
+            assert_equal(true, e.json_body.kind_of?(Hash))
           end
-
-          assert_equal true, rescued
         end
+
+        should "a 401 should give an AuthenticationError with http status, body, and JSON body" do
+          begin
+            VCR.use_cassette('api_resource/auth_error_with_details') do
+              Stripe::Customer.retrieve("foo", "invalid_key")
+            end
+          rescue Stripe::AuthenticationError => e
+            assert_equal(401, e.http_status)
+            assert_equal(true, !!e.http_body)
+            assert_equal(true, e.json_body.kind_of?(Hash))
+          end
+        end
+
+        should "a 402 should give a CardError with http status, body, and JSON body" do
+          begin
+            VCR.use_cassette('api_resource/card_error_with_details') do
+              card_params = {
+                :number => '4242424242424242',
+                :exp_year => 2000,
+                :exp_month => 1
+              }
+              Stripe::Charge.create({:card => card_params, :amount => 1000, :currency => "usd"})
+            end
+          rescue Stripe::CardError => e
+            assert_equal(402, e.http_status)
+            assert_equal(true, !!e.http_body)
+            assert_equal(true, e.json_body.kind_of?(Hash))
+          end
+        end
+
+        should "a 404 should give an InvalidRequestError with http status, body, and JSON body" do
+          response = test_response(test_api_error, 404)
+          Stripe.expects(:execute_request).once.
+            raises(RestClient::ExceptionWithResponse.new(response, 404))
+
+          begin
+            Stripe::Customer.retrieve("foo")
+          rescue Stripe::InvalidRequestError => e
+            assert_equal(404, e.http_status)
+            assert_equal(true, !!e.http_body)
+            assert_equal(true, e.json_body.kind_of?(Hash))
+          end
+        end
+
 
         should "5XXs should raise an APIError" do
           response = test_response(test_api_error, 500)
-          @mock.expects(:get).once.raises(RestClient::ExceptionWithResponse.new(response, 500))
+          Stripe.expects(:execute_request).once.
+            raises(RestClient::ExceptionWithResponse.new(response, 500))
 
-          rescued = false
           begin
             Stripe::Customer.new("test_customer").refresh
-            assert false #shouldn't get here either
           rescue Stripe::APIError => e # we don't use assert_raises because we want to examine e
-            rescued = true
             assert e.kind_of? Stripe::APIError
           end
-
-          assert_equal true, rescued
         end
 
-        should "402s should raise a CardError" do
-          response = test_response(test_invalid_exp_year_error, 402)
-          @mock.expects(:get).once.raises(RestClient::ExceptionWithResponse.new(response, 402))
-
-          rescued = false
-          begin
-            Stripe::Customer.new("test_customer").refresh
-            assert false #shouldn't get here either
-          rescue Stripe::CardError => e # we don't use assert_raises because we want to examine e
-            rescued = true
-            assert e.kind_of? Stripe::CardError
-            assert_equal "invalid_expiry_year", e.code
-            assert_equal "exp_year", e.param
-            assert_equal "Your card's expiration year is invalid", e.message
-          end
-
-          assert_equal true, rescued
-        end
       end
     end
   end
