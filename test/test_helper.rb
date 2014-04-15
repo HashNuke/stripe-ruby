@@ -380,7 +380,7 @@ class Test::Unit::TestCase
   setup do
     @mock = mock
     Stripe.mock_rest_client = @mock
-    Stripe.api_key = ENV["STRIPE_API_KEY"]
+    Stripe.api_key = ENV["STRIPE_TEST_API_KEY"]
   end
 
   teardown do
