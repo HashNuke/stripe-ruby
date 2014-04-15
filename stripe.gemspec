@@ -18,8 +18,10 @@ spec = Gem::Specification.new do |s|
 
   s.add_development_dependency('mocha', '~> 0.13.2')
   s.add_development_dependency('shoulda', '~> 3.4.0')
-  s.add_development_dependency('test-unit')
   s.add_development_dependency('vcr', '~> 2.9.0')
+  s.add_development_dependency('faker', '~> 1.3.0')
+  s.add_development_dependency('debugger')
+  s.add_development_dependency('test-unit')
   s.add_development_dependency('rake')
 
   s.files = `git ls-files`.split("\n")
